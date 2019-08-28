@@ -1,6 +1,7 @@
 package com.wenkesj.voice;
 
 import android.Manifest;
+import android.app.Activity;
 import android.content.ComponentName;
 import android.content.Intent;
 import android.content.pm.PackageManager;
@@ -10,10 +11,13 @@ import android.os.Handler;
 import android.speech.RecognitionListener;
 import android.speech.RecognitionService;
 import android.speech.RecognizerIntent;
+import android.speech.RecognizerResultsIntent;
 import android.speech.SpeechRecognizer;
 import android.support.annotation.NonNull;
 import android.util.Log;
+import android.widget.Toast;
 
+import com.facebook.react.bridge.ActivityEventListener;
 import com.facebook.react.bridge.Arguments;
 import com.facebook.react.bridge.Callback;
 import com.facebook.react.bridge.Promise;
@@ -29,17 +33,25 @@ import com.facebook.react.modules.core.PermissionAwareActivity;
 import com.facebook.react.modules.core.PermissionListener;
 
 import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Locale;
+import java.util.Set;
 
 import javax.annotation.Nullable;
 
-public class VoiceModule extends ReactContextBaseJavaModule implements RecognitionListener {
+import static android.speech.RecognizerIntent.EXTRA_CONFIDENCE_SCORES;
+import static android.speech.RecognizerIntent.EXTRA_RESULTS;
+import static android.speech.SpeechRecognizer.RESULTS_RECOGNITION;
+
+public class VoiceModule extends ReactContextBaseJavaModule implements RecognitionListener, ActivityEventListener {
 
   final ReactApplicationContext reactContext;
   private SpeechRecognizer speech = null;
   private boolean isRecognizing = false;
   private String locale = null;
+  private final static int UNKNOWN_ERROR = 0;
 
   public VoiceModule(ReactApplicationContext reactContext) {
     super(reactContext);
@@ -59,7 +71,7 @@ public class VoiceModule extends ReactContextBaseJavaModule implements Recogniti
       speech.destroy();
       speech = null;
     }
-    
+
     if(opts.hasKey("RECOGNIZER_ENGINE")) {
       switch (opts.getString("RECOGNIZER_ENGINE")) {
         case "GOOGLE": {
@@ -121,9 +133,11 @@ public class VoiceModule extends ReactContextBaseJavaModule implements Recogniti
         }
       }
     }
-
-    intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE, getLocale(this.locale));
-    speech.startListening(intent);
+    if (this.locale != null) {
+      intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE, getLocale(this.locale));
+    }
+    reactContext.addActivityEventListener(this);
+    getCurrentActivity().startActivityForResult(intent, 100);
   }
 
   @Override
@@ -248,7 +262,7 @@ public class VoiceModule extends ReactContextBaseJavaModule implements Recogniti
   @ReactMethod
   public void getSpeechRecognitionServices(Promise promise) {
     final List<ResolveInfo> services = this.reactContext.getPackageManager()
-        .queryIntentServices(new Intent(RecognitionService.SERVICE_INTERFACE), 0);
+            .queryIntentServices(new Intent(RecognitionService.SERVICE_INTERFACE), 0);
     WritableArray serviceNames = Arguments.createArray();
     for (ResolveInfo service : services) {
       serviceNames.pushString(service.serviceInfo.packageName);
@@ -270,8 +284,8 @@ public class VoiceModule extends ReactContextBaseJavaModule implements Recogniti
 
   private void sendEvent(String eventName, @Nullable WritableMap params) {
     this.reactContext
-      .getJSModule(DeviceEventManagerModule.RCTDeviceEventEmitter.class)
-      .emit(eventName, params);
+            .getJSModule(DeviceEventManagerModule.RCTDeviceEventEmitter.class)
+            .emit(eventName, params);
   }
 
   @Override
@@ -317,7 +331,7 @@ public class VoiceModule extends ReactContextBaseJavaModule implements Recogniti
   public void onPartialResults(Bundle results) {
     WritableArray arr = Arguments.createArray();
 
-    ArrayList<String> matches = results.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION);
+    ArrayList<String> matches = results.getStringArrayList(RESULTS_RECOGNITION);
     for (String result : matches) {
       arr.pushString(result);
     }
@@ -338,17 +352,32 @@ public class VoiceModule extends ReactContextBaseJavaModule implements Recogniti
 
   @Override
   public void onResults(Bundle results) {
-    WritableArray arr = Arguments.createArray();
+    try {
+      WritableArray arr = Arguments.createArray();
 
-    ArrayList<String> matches = results.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION);
-    for (String result : matches) {
-      arr.pushString(result);
+      float[] confidenceScores = results.getFloatArray(EXTRA_CONFIDENCE_SCORES);
+      if (confidenceScores != null && confidenceScores.length > 0) {
+        int highScoreIndex = 0;
+        float highScore = 0;
+        for (int i = 0; i < confidenceScores.length; i++) {
+          if (confidenceScores[i] > highScore) {
+            highScoreIndex = i;
+            highScore = confidenceScores[i];
+          }
+        }
+        ArrayList<String> matches = results.getStringArrayList(EXTRA_RESULTS);
+        if (matches != null && matches.size() > highScoreIndex) {
+          arr.pushString(matches.get(highScoreIndex));
+          WritableMap event = Arguments.createMap();
+          event.putArray("value", arr);
+          sendEvent("onSpeechResults", event);
+          Log.d("ASR", "onResults()");
+        }
+      }
     }
-
-    WritableMap event = Arguments.createMap();
-    event.putArray("value", arr);
-    sendEvent("onSpeechResults", event);
-    Log.d("ASR", "onResults()");
+    catch(Exception e) {
+      onError(UNKNOWN_ERROR);
+    }
   }
 
   @Override
@@ -388,10 +417,23 @@ public class VoiceModule extends ReactContextBaseJavaModule implements Recogniti
       case SpeechRecognizer.ERROR_SPEECH_TIMEOUT:
         message = "No speech input";
         break;
+      case UNKNOWN_ERROR:
+        message = "Unknown error";
+        break;
       default:
         message = "Didn't understand, please try again.";
         break;
     }
     return message;
+  }
+
+  @Override
+  public void onActivityResult(Activity activity, int requestCode, int resultCode, Intent data) {
+    onResults(data.getExtras());
+  }
+
+  @Override
+  public void onNewIntent(Intent intent) {
+
   }
 }
