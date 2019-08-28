@@ -429,7 +429,9 @@ public class VoiceModule extends ReactContextBaseJavaModule implements Recogniti
 
   @Override
   public void onActivityResult(Activity activity, int requestCode, int resultCode, Intent data) {
-    onResults(data.getExtras());
+    if (data != null) {
+      onResults(data.getExtras());
+    }
   }
 
   @Override
